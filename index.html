@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Loot Day</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Matter.js Physics Engine -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800;900&display=swap');
+    
+    * {
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #f7f4eb; /* Rice paper background */
+      color: #2d2a26;
+      overflow: hidden;
+      user-select: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* Vector Chest Animations */
+    .chest-wrapper {
+      perspective: 1000px;
+    }
+
+    .chest-lid-group {
+      transform-origin: 30px 85px; /* Hinge on top-left rear edge */
+      transition: transform 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    .chest-open .chest-lid-group {
+      transform: rotate(-110deg); /* Smooth rear open hinge */
+    }
+
+    .chest-shake {
+      animation: chestShake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+    }
+
+    @keyframes chestShake {
+      10%, 90% { transform: translate3d(-3px, 0, 0) scale(1.02); }
+      20%, 80% { transform: translate3d(5px, 0, 0) scale(0.98); }
+      30%, 50%, 70% { transform: translate3d(-7px, 0, 0) scale(1.04); }
+      40%, 60% { transform: translate3d(7px, 0, 0) scale(0.96); }
+    }
+
+    .energy-warn {
+      animation: energyWarn 0.4s cubic-bezier(.36,.07,.19,.97) both;
+    }
+
+    @keyframes energyWarn {
+      10%, 90% { transform: translate3d(-2px, 0, 0); color: #dc2626; }
+      20%, 80% { transform: translate3d(3px, 0, 0); }
+      30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+      40%, 60% { transform: translate3d(4px, 0, 0); }
+    }
+
+    /* Feed & Panel Transitions */
+    .feed-panel {
+      transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+    }
+
+    .feed-hidden-left {
+      transform: translateX(-120%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .feed-visible {
+      transform: translateX(0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* Side Panel Unlocks Drawer */
+    .drawer-panel {
+      transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .drawer-closed {
+      transform: translateX(100%);
+    }
+
+    .drawer-open {
+      transform: translateX(0);
+    }
+
+    /* Chest Glow Effect when opened */
+    .chest-glow {
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .chest-open .chest-glow {
+      opacity: 0.85;
+    }
+
+    /* Custom subtle scrollbars */
+    ::-webkit-scrollbar {
+      width: 4px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #d4ceb8;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="h-screen w-screen relative flex flex-col justify-between overflow-hidden">
+
+  <!-- TOP PLAYBACK BANNER (shown when viewing shared roll) -->
+  <div id="playback-banner" class="hidden fixed top-0 left-0 right-0 z-50 bg-amber-500 text-stone-900 px-4 py-2 text-center shadow-md flex items-center justify-between">
+    <div class="text-xs font-black flex items-center gap-2 mx-auto">
+      <span>🎬</span>
+      <span id="playback-user-title">Viewing Shared Roll</span>
+    </div>
+    <a href="#" id="exit-playback-btn" class="text-[11px] font-black underline hover:text-stone-950 transition">Play Own Game</a>
+  </div>
+
+  <!-- TAMPER WARNING BANNER -->
+  <div id="tamper-banner" class="hidden fixed top-0 left-0 right-0 z-50 bg-red-600 text-white px-4 py-2 text-center shadow-md flex items-center justify-between">
+    <div class="text-xs font-black flex items-center gap-2 mx-auto">
+      <span>⚠️</span>
+      <span>Security Alert: This share link was altered or tampered with!</span>
+    </div>
+    <a href="#" id="exit-tamper-btn" class="text-[11px] font-black underline hover:text-red-200 transition">Dismiss</a>
+  </div>
+
+  <!-- TOP LEFT: PURE PLAIN TEXT FEEDS (EXACTLY ON TOP LEFT) -->
+  <div class="fixed top-4 left-4 z-30 flex flex-col pointer-events-none select-none max-w-[280px]">
+    <!-- LIVE PULL FEED -->
+    <div id="live-pull-feed" class="feed-panel feed-hidden-left flex flex-col gap-0.5 m-0 p-0">
+      <div class="text-[11px] font-black uppercase tracking-wider text-stone-400 leading-none mb-1">Current Unboxing:</div>
+      <div id="pull-feed-list" class="flex flex-col gap-0.5"></div>
+    </div>
+
+    <!-- CUMULATIVE TOTALS FEED -->
+    <div id="totals-feed" class="feed-panel feed-visible flex flex-col gap-0.5 m-0 p-0">
+      <div class="text-[11px] font-black uppercase tracking-wider text-stone-400 leading-none mb-1">Total Collected:</div>
+      <div id="totals-feed-list" class="flex flex-col gap-0.5"></div>
+      
+      <!-- SHARE ROLL BUTTON (NOW ON TOTALS FEED) -->
+      <button id="share-roll-btn" class="hidden pointer-events-auto mt-2 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-black rounded-lg shadow transition flex items-center justify-center gap-1.5 w-max">
+        <span>📋</span> Share Roll
+      </button>
+    </div>
+  </div>
+
+  <!-- TOP CENTER: ENERGY & COOLDOWN STATUS -->
+  <div class="fixed top-4 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center pointer-events-none select-none">
+    <div id="energy-display" class="text-xs font-black text-amber-700 tracking-wide flex items-center gap-1 transition-colors">
+      <span>⚡</span>
+      <span id="energy-count">5/5</span>
+    </div>
+    <div id="energy-timer" class="text-[10px] font-bold text-stone-400 mt-0.5 hidden">
+      Next +1 in <span id="energy-timer-count">00:00</span>
+    </div>
+  </div>
+
+  <!-- TOP RIGHT: BUTTONS (INFO & UNLOCKS) -->
+  <div class="fixed top-4 right-4 z-30 flex items-center gap-1">
+    <button id="open-info-btn" class="text-stone-700 hover:text-stone-900 active:scale-95 p-2 transition" title="Info & Changelog">
+      <svg class="w-6 h-6 stroke-current" fill="none" viewBox="0 0 24 24" stroke-width="2.2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    </button>
+    <button id="open-unlocks-btn" class="text-stone-700 hover:text-stone-900 active:scale-95 p-2 transition" title="View Unlocks & Secret Notes">
+      <svg class="w-6 h-6 stroke-current" fill="none" viewBox="0 0 24 24" stroke-width="2.2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+      </svg>
+    </button>
+  </div>
+
+  <!-- INFO & CHANGELOG DRAWER -->
+  <div id="info-drawer" class="drawer-panel drawer-closed fixed top-0 right-0 bottom-0 w-full max-w-sm z-40 bg-[#f7f4eb] border-l border-stone-300 p-6 flex flex-col shadow-2xl overflow-y-auto">
+    <div class="flex items-center justify-between pb-4 border-b border-stone-300">
+      <div>
+        <h2 class="text-lg font-black text-stone-800">Game Info & Payouts</h2>
+        <p class="text-xs text-stone-500 font-bold">Changelog & Live Payout Table</p>
+      </div>
+      <button id="close-info-btn" class="p-2 text-stone-500 hover:text-stone-800 transition">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="my-6 flex flex-col gap-6 text-stone-700 text-xs leading-relaxed font-bold">
+      <div>
+        <h3 class="font-black text-stone-900 uppercase tracking-wider text-[11px] mb-2">Live Loot Payout Table</h3>
+        <p class="text-stone-600 mb-2">Chances and possible ranges per roll:</p>
+        <div id="payout-table-container" class="flex flex-col gap-2 bg-white/70 p-3 rounded-xl border border-stone-200">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <div>
+        <h3 class="font-black text-stone-900 uppercase tracking-wider text-[11px] mb-1">About Loot Stacker</h3>
+        <p class="text-stone-600">A minimalist unboxing simulator where collected items explode physically into the screen view. Collect items, stack your wealth, and unlock secret notes.</p>
+      </div>
+
+      <div>
+        <h3 class="font-black text-stone-900 uppercase tracking-wider text-[11px] mb-2">Changelog v1.6</h3>
+        <ul class="list-disc pl-4 flex flex-col gap-1 text-stone-600">
+          <li>Restored Matter.js physics explosion engine for unboxed loot.</li>
+          <li>Total Collected feed correctly hides during active roll animations.</li>
+          <li>Added live payout probability table inside Info & Changelog drawer.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- UNLOCKS & NOTES SIDE DRAWER -->
+  <div id="unlocks-drawer" class="drawer-panel drawer-closed fixed top-0 right-0 bottom-0 w-full max-w-sm z-40 bg-[#f7f4eb] border-l border-stone-300 p-6 flex flex-col shadow-2xl overflow-y-auto">
+    
+    <!-- MAIN LIST VIEW HEADER -->
+    <div id="drawer-main-header" class="flex items-center justify-between pb-4 border-b border-stone-300">
+      <div>
+        <h2 class="text-lg font-black text-stone-800">Unlocks & Notes</h2>
+        <p class="text-xs text-stone-500 font-bold">Collect resources to unlock secret notes</p>
+      </div>
+      <button id="close-unlocks-btn" class="p-2 text-stone-500 hover:text-stone-800 transition">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- DETAIL VIEW HEADER (HIDDEN BY DEFAULT) -->
+    <div id="drawer-detail-header" class="hidden flex items-center justify-between pb-4 border-b border-stone-300">
+      <button id="back-to-list-btn" class="flex items-center gap-1 text-xs font-black text-stone-600 hover:text-stone-900 transition">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        <span>Back to Notes</span>
+      </button>
+    </div>
+
+    <!-- MAIN PLAIN TEXT LIST CONTAINER (SEPARATED BY DIVIDER LINES) -->
+    <div id="unlocks-list" class="flex flex-col my-4">
+      <!-- Populated dynamically -->
+    </div>
+
+    <!-- DETAIL VIEW CONTAINER (PLAIN TEXT NOTE PAGE) -->
+    <div id="unlock-detail-view" class="hidden flex-col gap-4 my-6">
+      <!-- Note details injected here -->
+    </div>
+
+    <!-- WIPE SAVE BUTTON & MODAL -->
+    <div class="mt-auto pt-6 border-t border-stone-300 flex flex-col items-center">
+      <button id="wipe-save-btn" class="w-full py-2.5 text-red-600 hover:text-red-800 font-black text-xs tracking-wider uppercase transition">
+        Wipe Save Data
+      </button>
+
+      <!-- Inline Wipe Confirm Box -->
+      <div id="wipe-confirm-box" class="hidden w-full mt-2 p-3 bg-red-50 border border-red-300 rounded-xl flex flex-col gap-2 text-center">
+        <p class="text-xs text-red-800 font-bold">Wipe all lifetime progress?</p>
+        <div class="flex gap-2">
+          <button id="confirm-wipe-btn" class="flex-1 py-1 bg-red-600 text-white font-black text-xs rounded hover:bg-red-700 transition">Yes, Wipe</button>
+          <button id="cancel-wipe-btn" class="flex-1 py-1 bg-stone-200 text-stone-800 font-black text-xs rounded hover:bg-stone-300 transition">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SHARE ROLL MODAL -->
+  <div id="share-modal" class="hidden fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm">
+    <div class="bg-[#f7f4eb] border border-stone-300 rounded-2xl w-full max-w-sm p-5 shadow-2xl flex flex-col gap-4">
+      <div class="flex items-center justify-between pb-2 border-b border-stone-300">
+        <h3 class="text-base font-black text-stone-800 flex items-center gap-2">
+          <span>📋</span> Share Your Roll
+        </h3>
+        <button id="close-share-modal-btn" class="text-stone-400 hover:text-stone-700 transition font-black">✕</button>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <label class="text-xs font-black text-stone-600 uppercase tracking-wider">Your Hunter Name</label>
+        <input type="text" id="share-username-input" class="w-full px-3 py-2 bg-white border border-stone-300 rounded-xl text-xs font-extrabold text-stone-800 focus:outline-none focus:border-amber-600" placeholder="Enter your name" value="Loot Hunter">
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <label class="text-xs font-black text-stone-600 uppercase tracking-wider">Share Preview</label>
+        <textarea id="share-text-preview" readonly class="w-full h-32 px-3 py-2 bg-stone-100 border border-stone-300 rounded-xl text-xs font-bold text-stone-700 resize-none focus:outline-none select-all"></textarea>
+      </div>
+
+      <div class="flex flex-col gap-2">
+        <button id="copy-share-btn" class="w-full py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-xl shadow transition active:scale-95">
+          Copy Share Link & Text
+        </button>
+        <span id="copy-toast" class="hidden text-center text-[11px] font-black text-emerald-700">✓ Copied to clipboard!</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHYSICS CANVAS HOLDER -->
+  <div id="canvas-holder" class="absolute inset-0 pointer-events-none"></div>
+
+  <!-- BOTTOM: VECTOR HIGH-RES CHEST -->
+  <main class="w-full max-w-sm mx-auto z-20 flex flex-col items-center pb-[max(env(safe-area-inset-bottom,120px),120px)] max-h-[calc(100vh-120px)] sm:pb-8 mt-auto pointer-events-auto">
+    <div id="chest-box" class="chest-wrapper cursor-pointer group flex flex-col items-center justify-center p-2">
+      <svg class="w-40 h-36 drop-shadow-xl overflow-visible" viewBox="0 0 200 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="woodBase" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#8a4b23"/>
+            <stop offset="100%" stop-color="#542c11"/>
+          </linearGradient>
+          <linearGradient id="metalRim" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#fbbf24"/>
+            <stop offset="50%" stop-color="#d97706"/>
+            <stop offset="100%" stop-color="#78350f"/>
+          </linearGradient>
+          <radialGradient id="innerGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#fef08a" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- Interior Glow when Open -->
+        <circle class="chest-glow" cx="100" cy="85" r="60" fill="url(#innerGlow)" />
+
+        <!-- CHEST BASE -->
+        <g id="chest-base">
+          <rect x="30" y="85" width="140" height="75" rx="8" fill="url(#woodBase)" stroke="#3b1c08" stroke-width="4"/>
+          <rect x="40" y="85" width="16" height="75" fill="url(#metalRim)"/>
+          <rect x="144" y="85" width="16" height="75" fill="url(#metalRim)"/>
+          <rect x="30" y="150" width="140" height="10" fill="url(#metalRim)"/>
+          <rect x="90" y="90" width="20" height="25" rx="3" fill="url(#metalRim)" stroke="#3b1c08" stroke-width="2"/>
+          <circle cx="100" cy="100" r="3" fill="#3b1c08"/>
+        </g>
+
+        <!-- CHEST LID (LOWERED CYLINDER BANDS) -->
+        <g id="chest-lid" class="chest-lid-group">
+          <path d="M 26 88 C 26 40, 174 40, 174 88 Z" fill="url(#woodBase)" stroke="#3b1c08" stroke-width="4"/>
+          <path d="M 40 88 C 40 58, 56 58, 56 88 Z" fill="url(#metalRim)"/>
+          <path d="M 144 88 C 144 58, 160 58, 160 88 Z" fill="url(#metalRim)"/>
+          <rect x="26" y="80" width="148" height="10" fill="url(#metalRim)" stroke="#3b1c08" stroke-width="2"/>
+          <rect x="90" y="78" width="20" height="16" rx="3" fill="url(#metalRim)" stroke="#3b1c08" stroke-width="2"/>
+        </g>
+      </svg>
+      <div class="h-8 sm:h-10 md:h-12"></div>
+      <p id="tap-hint-text" class="mt-1 text-xs font-black tracking-widest text-stone-500 uppercase group-hover:text-stone-800 transition">TAP TO UNBOX</p>
+    
+    </div>
+  </main>
+
+  <script>
+    // ==========================================
+    // 1. CONFIGURABLE COOLDOWN / ENERGY SYSTEM
+    // ==========================================
+    const ENERGY_CONFIG = {
+      maxEnergy: 7,               // Maximum stored energy
+      rechargeRateSeconds: 70,     // Time in seconds to gain +1 energy
+      costPerRoll: 1               // Energy cost per box open
+    };
+
+    // ==========================================
+    // 2. EXPLOSION & LOOT CONFIGURATION
+    // ==========================================
+    const EXPLOSION_CONFIG = {
+      upwardForceMin: 0.22,   // Base upward launch force
+      upwardForceMax: 0.32,   // Max upward force
+      spreadForce: 0.10,      // Horizontal spread (-spread to +spread)
+      torqueMin: -0.15,       // Spin speed
+      torqueMax: 0.15,
+      gravity: 0.85,          // Physics gravity
+      bounciness: 0.50,       // Bounce restitution
+      friction: 0.50
+    };
+
+    const LOOT_CONFIG = [
+              {
+        id: 'experinece',
+        name: 'Experience',
+        type: 'experience',
+        emoji: '🪙',
+        color: 'purple', // Orange
+        baseRange: [1, 1],
+        extraChances: [
+            { chance: 10, range: [3, 3] },
+            { chance: 1, range: [9, 9] },
+            { chance: 0.1, range: [27, 27] },
+            { chance: 0.01, range: [81, 81] },
+            { chance: 0.001, range: [243, 243] },
+        ]
+      },
+      {
+        id: 'coins',
+        name: 'Coins',
+        type: 'coin',
+        emoji: '🪙',
+        color: '#f97316', // Orange
+        baseRange: [2, 8],
+        extraChances: [
+          { chance: 50, range: [5, 15] },
+          { chance: 20, range: [12, 25] },
+          { chance: 4, range: [25, 50] },
+          { chance: 1.6, range: [50, 125] },
+          { chance: 0.64, range: [125, 300] },
+          { chance: 0.256, range: [300, 575] },
+          { chance: 0.1024, range: [575, 1200] }
+        ]
+      },
+            {
+        id: 'coin',
+        name: 'Ancient coins',
+        type: 'coin bag',
+        emoji: '🪙',
+        color: '#fb923c', // Orange
+        baseRange: [0,1],
+        extraChances: [
+          { chance: 2, range: [250, 500] },
+          { chance: 0.5, range: [375, 1000] },
+          { chance: 0.125, range: [500, 2000] }
+        ]
+      },
+      {
+        id: 'gems',
+        name: 'Gems',
+        type: 'gem',
+        emoji: '💎',
+        color: '#0891b2', // Cyan
+        baseRange: [0,0],
+        extraChances: [
+          { chance: 40, range: [1,1] },
+          { chance: 10, range: [2, 4] },
+          { chance: 4, range: [4, 7] },
+          { chance: 1, range: [6, 15] },
+          { chance: 0.4, range: [12, 38] },
+          { chance: 0.1, range: [32, 70] }
+        ]
+      },
+      {
+        id: 'key',
+        name: 'Keys',
+        type: 'key',
+        emoji: '🔑',
+        color: '#ca8a04', // Yellow gold
+        baseRange: [0, 0],
+        extraChances: [
+          { chance: 5, range: [1, 1] },
+          { chance: 5, range: [1, 1] },
+          { chance: 5, range: [1, 1] },
+          { chance: 5, range: [1, 1] },
+          { chance: 5, range: [1, 1] },
+          { chance: 0.25, range: [5, 10] },
+        ]
+      },
+      {
+        id: 'emerald',
+        name: 'Emeralds',
+        type: 'emerald',
+        emoji: '❇️',
+        color: '#059669', // Emerald Green
+        baseRange: [0, 0],
+        extraChances: [
+          { chance: 15, range: [1, 1] },
+          { chance: 3, range: [2, 2] },
+          { chance: 1, range: [3, 5] },
+          { chance: 0.25, range: [5, 12] },
+          { chance: 0.1, range: [13, 25] }
+        ]
+      },
+      {
+        id: 'ruby',
+        name: 'Rubies',
+        type: 'ruby',
+        emoji: '🔻',
+        color: '#dc2626', // Red
+        baseRange: [0, 0],
+        extraChances: [
+          { chance: 10, range: [1, 1] },
+          { chance: 2, range: [2, 2] },
+          { chance: 0.8, range: [3, 5] },
+          { chance: 0.15, range: [5, 12] },
+          { chance: 0.06, range: [13, 25] }
+        ]
+      },
+      {
+        id: 'sapphire',
+        name: 'Sapphires',
+        type: 'sapphire',
+        emoji: '🔷',
+        color: '#2563eb', // Blue
+        baseRange: [0, 0],
+        extraChances: [
+          { chance: 7, range: [1, 1] },
+          { chance: 1.2, range: [2, 2] },
+          { chance: 0.3, range: [3, 5] },
+          { chance: 0.12, range: [5, 12] },
+          { chance: 0.04, range: [13, 25] },
+        ]
+      },
+      {
+        id: 'map',
+        name: 'Maps',
+        type: 'map',
+        emoji: '🗺️',
+        color: '#7c3aed', // Purple
+        baseRange: [0, 0],
+        extraChances: [
+          { chance: 2.5, range: [1, 1] },
+          { chance: 0.25, range: [2, 2] },
+          { chance: 0.08, range: [3, 5] }
+        ]
+      },
+
+    ];
+
+    // ==========================================
+    // 3. RENDER PAYOUT TABLE IN INFO DRAWER
+    // ==========================================
+    function renderPayoutTable() {
+      const container = document.getElementById('payout-table-container');
+      if (!container) return;
+      container.innerHTML = '';
+
+      LOOT_CONFIG.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'flex flex-col gap-0.5 pb-2 border-b border-stone-200 last:border-b-0 last:pb-0';
+        
+        let chancesHtml = `<span class="text-stone-500 text-[10px]">Base: ${item.baseRange[0]}-${item.baseRange[1]}</span>`;
+        if (item.extraChances && item.extraChances.length > 0) {
+          const tierStrs = item.extraChances.map(t => `${t.chance}% +${t.range[0]}~${t.range[1]}`).join(' <br> ');
+          chancesHtml += `<br><span class="text-stone-500 text-[10px]">Extra: ${tierStrs}</span>`;
+        }
+
+        row.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="font-black text-stone-800" style="color: ${item.color}">${item.emoji} ${item.name}</span>
+          </div>
+          <div>${chancesHtml}</div>
+        `;
+        container.appendChild(row);
+      });
+    }
+
+    // ==========================================
+    // 4. PERSISTENT STATE MANAGEMENT & AUTH
+    // ==========================================
+    const LOCAL_STORAGE_KEY = 'loot_stacker_lifetime_stats_v2';
+    const HAS_UNBOXED_KEY = 'loot_stacker_has_unboxed_v1';
+    const ENERGY_STORAGE_KEY = 'loot_stacker_energy_state_v1';
+    const USERNAME_STORAGE_KEY = 'loot_stacker_username_v1';
+    const SECRET_SALT_KEY = 'LS_SECRET_AUTH_SALT_98765_PROD';
+
+    let lifetimeStats = loadStats();
+    let hasUnboxedFirstTime = localStorage.getItem(HAS_UNBOXED_KEY) === 'true';
+    let isPlaybackMode = false;
+
+    // Energy state
+    let energyState = loadEnergyState();
+
+    function loadStats() {
+      const initial = {};
+      LOOT_CONFIG.forEach(item => initial[item.id] = 0);
+      try {
+        const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (saved) return { ...initial, ...JSON.parse(saved) };
+      } catch (e) {}
+      return initial;
+    }
+
+    function saveStats() {
+      try {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(lifetimeStats));
+      } catch (e) {}
+    }
+
+    function loadEnergyState() {
+      const defaultState = {
+        currentEnergy: ENERGY_CONFIG.maxEnergy,
+        lastUpdatedTime: Date.now()
+      };
+      try {
+        const saved = localStorage.getItem(ENERGY_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          const now = Date.now();
+          const elapsedSec = Math.floor((now - parsed.lastUpdatedTime) / 1000);
+          
+          if (parsed.currentEnergy < ENERGY_CONFIG.maxEnergy) {
+            const energyGained = Math.floor(elapsedSec / ENERGY_CONFIG.rechargeRateSeconds);
+            const newEnergy = Math.min(ENERGY_CONFIG.maxEnergy, parsed.currentEnergy + energyGained);
+            const leftoverTime = elapsedSec % ENERGY_CONFIG.rechargeRateSeconds;
+            
+            return {
+              currentEnergy: newEnergy,
+              lastUpdatedTime: now - (leftoverTime * 1000)
+            };
+          }
+          return { currentEnergy: parsed.currentEnergy, lastUpdatedTime: now };
+        }
+      } catch (e) {}
+      return defaultState;
+    }
+
+    function saveEnergyState() {
+      try {
+        localStorage.setItem(ENERGY_STORAGE_KEY, JSON.stringify(energyState));
+      } catch (e) {}
+    }
+
+    function wipeSaveData() {
+      LOOT_CONFIG.forEach(item => lifetimeStats[item.id] = 0);
+      hasUnboxedFirstTime = false;
+      energyState = {
+        currentEnergy: ENERGY_CONFIG.maxEnergy,
+        lastUpdatedTime: Date.now()
+      };
+      
+      try {
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
+        localStorage.removeItem(HAS_UNBOXED_KEY);
+        localStorage.removeItem(ENERGY_STORAGE_KEY);
+      } catch (e) {}
+      
+      const tapHintText = document.getElementById('tap-hint-text');
+      if (tapHintText) tapHintText.style.display = 'block';
+
+      updateEnergyUI();
+      renderTotalsFeed(false);
+      renderUnlocksList();
+    }
+
+    // Secret authentication signature generator for share link anti-tampering
+    function generateRollAuthSig(userName, rollDataCompactStr) {
+      const raw = `${userName}|${rollDataCompactStr}|${SECRET_SALT_KEY}`;
+      let hash = 0;
+      for (let i = 0; i < raw.length; i++) {
+        const char = raw.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash |= 0;
+      }
+      return Math.abs(hash).toString(36);
+    }
+
+    // Base64 Encoders / Decoders for Share Payloads
+    function encodeShareData(userName, rollCompactStr) {
+      const jsonStr = JSON.stringify({ u: userName, r: rollCompactStr });
+      return btoa(unescape(encodeURIComponent(jsonStr)));
+    }
+
+    function decodeShareData(base64Str) {
+      try {
+        const jsonStr = decodeURIComponent(escape(atob(base64Str)));
+        return JSON.parse(jsonStr);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    if (hasUnboxedFirstTime) {
+      document.addEventListener("DOMContentLoaded", () => {
+        const tapHintText = document.getElementById('tap-hint-text');
+        if (tapHintText) tapHintText.style.display = 'none';
+      });
+    }
+
+    // ==========================================
+    // 5. ENERGY & COOLDOWN TICKER LOGIC
+    // ==========================================
+    const energyCountEl = document.getElementById('energy-count');
+    const energyTimerEl = document.getElementById('energy-timer');
+    const energyTimerCountEl = document.getElementById('energy-timer-count');
+    const energyDisplayEl = document.getElementById('energy-display');
+
+    function updateEnergyUI() {
+      const now = Date.now();
+      const elapsedSec = Math.floor((now - energyState.lastUpdatedTime) / 1000);
+
+      if (energyState.currentEnergy < ENERGY_CONFIG.maxEnergy) {
+        if (elapsedSec >= ENERGY_CONFIG.rechargeRateSeconds) {
+          const gained = Math.floor(elapsedSec / ENERGY_CONFIG.rechargeRateSeconds);
+          energyState.currentEnergy = Math.min(ENERGY_CONFIG.maxEnergy, energyState.currentEnergy + gained);
+          energyState.lastUpdatedTime = now - ((elapsedSec % ENERGY_CONFIG.rechargeRateSeconds) * 1000);
+          saveEnergyState();
+        }
+      }
+
+      energyCountEl.innerText = `${energyState.currentEnergy}/${ENERGY_CONFIG.maxEnergy}`;
+
+      if (energyState.currentEnergy < ENERGY_CONFIG.maxEnergy) {
+        const remainingSec = ENERGY_CONFIG.rechargeRateSeconds - (Math.floor((now - energyState.lastUpdatedTime) / 1000) % ENERGY_CONFIG.rechargeRateSeconds);
+        const mins = String(Math.floor(remainingSec / 60)).padStart(2, '0');
+        const secs = String(remainingSec % 60).padStart(2, '0');
+        
+        energyTimerCountEl.innerText = `${mins}:${secs}`;
+        energyTimerEl.classList.remove('hidden');
+      } else {
+        energyTimerEl.classList.add('hidden');
+      }
+    }
+
+    setInterval(updateEnergyUI, 1000);
+
+    // ==========================================
+    // 6. FEED & ANIMATED CUMULATIVE COUNTER
+    // ==========================================
+    const livePullFeedEl = document.getElementById('live-pull-feed');
+    const pullFeedListEl = document.getElementById('pull-feed-list');
+    const totalsFeedEl = document.getElementById('totals-feed');
+    const totalsFeedListEl = document.getElementById('totals-feed-list');
+    const shareRollBtn = document.getElementById('share-roll-btn');
+
+    let currentPullDrops = {}; // { type: quantity }
+    let lastCompletedPullDrops = null;
+    let animationFrameId = null;
+
+    function resetLivePullFeed() {
+      currentPullDrops = {};
+      pullFeedListEl.innerHTML = '';
+    }
+
+    function recordPullDrop(type) {
+      const config = LOOT_CONFIG.find(c => c.type === type);
+      if (!config) return;
+
+      currentPullDrops[type] = (currentPullDrops[type] || 0) + 1;
+      
+      let itemEl = pullFeedListEl.querySelector(`[data-feed-type="${type}"]`);
+      if (itemEl) {
+        itemEl.innerHTML = `<span style="color: ${config.color}">${config.name}</span> <span class="text-stone-700 font-black">×${currentPullDrops[type]}</span>`;
+      } else {
+        itemEl = document.createElement('div');
+        itemEl.setAttribute('data-feed-type', type);
+        itemEl.className = 'text-xs font-black';
+        itemEl.innerHTML = `<span style="color: ${config.color}">${config.name}</span> <span class="text-stone-700 font-black">×${currentPullDrops[type]}</span>`;
+        pullFeedListEl.appendChild(itemEl);
+      }
+    }
+
+    function easeOutQuad(x) {
+      return 1 - (1 - x) * (1 - x);
+    }
+
+    function animateTotalsTransition(gains) {
+      lastCompletedPullDrops = { ...gains };
+
+      // Shared rolls in playback mode DO NOT add towards total earnings
+      if (!isPlaybackMode) {
+        shareRollBtn.classList.remove('hidden');
+
+        const oldStats = { ...lifetimeStats };
+
+        for (let type in gains) {
+          const itemConfig = LOOT_CONFIG.find(c => c.type === type);
+          if (itemConfig) {
+            lifetimeStats[itemConfig.id] = (lifetimeStats[itemConfig.id] || 0) + gains[type];
+          }
+        }
+        saveStats();
+        renderUnlocksList();
+
+        setTimeout(() => {
+          livePullFeedEl.classList.remove('feed-visible');
+          livePullFeedEl.classList.add('feed-hidden-left');
+
+          setTimeout(() => {
+            resetLivePullFeed();
+            totalsFeedEl.classList.remove('feed-hidden-left');
+            totalsFeedEl.classList.add('feed-visible');
+
+            const duration = 1500;
+            const startTime = performance.now();
+
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+            function step(now) {
+              const elapsed = now - startTime;
+              const progress = Math.min(elapsed / duration, 1);
+              const eased = easeOutQuad(progress);
+
+              totalsFeedListEl.innerHTML = '';
+
+              LOOT_CONFIG.forEach(config => {
+                const oldVal = oldStats[config.id] || 0;
+                const gain = gains[config.type] || 0;
+                const totalVal = lifetimeStats[config.id] || 0;
+
+                if (totalVal > 0) {
+                  const currentGain = Math.round(gain * (1 - eased));
+                  const currentDisplayTotal = totalVal - currentGain;
+
+                  const row = document.createElement('div');
+                  row.className = 'text-xs font-black flex items-center gap-2';
+                  row.innerHTML = `
+                    <span style="color: ${config.color}">${config.name}</span>
+                    <span class="text-stone-800 font-black">
+                      ×${currentDisplayTotal}
+                      ${currentGain > 0 ? `<span class="text-emerald-600 ml-0.5 text-[11px]">(+${currentGain})</span>` : ''}
+                    </span>
+                  `;
+                  totalsFeedListEl.appendChild(row);
+                }
+              });
+
+              if (progress < 1) {
+                animationFrameId = requestAnimationFrame(step);
+              } else {
+                renderTotalsFeed(true);
+              }
+            }
+
+            animationFrameId = requestAnimationFrame(step);
+          }, 380);
+        }, 1200);
+      } else {
+        // Playback mode: Hide share button, do not mutate lifetime stats
+        shareRollBtn.classList.add('hidden');
+      }
+    }
+
+    function renderTotalsFeed(visible = true) {
+      totalsFeedListEl.innerHTML = '';
+      let hasAny = false;
+
+      LOOT_CONFIG.forEach(config => {
+        const val = lifetimeStats[config.id] || 0;
+        if (val > 0) {
+          hasAny = true;
+          const row = document.createElement('div');
+          row.className = 'text-xs font-black flex items-center gap-2';
+          row.innerHTML = `
+            <span style="color: ${config.color}">${config.name}</span>
+            <span class="text-stone-800 font-black">×${val}</span>
+          `;
+          totalsFeedListEl.appendChild(row);
+        }
+      });
+
+      if (!hasAny) {
+        totalsFeedListEl.innerHTML = `<span class="text-xs text-stone-400 font-bold italic">No loot collected yet</span>`;
+      }
+
+      // Always show share button if there is a completed pull (not in playback)
+      if (lastCompletedPullDrops && !isPlaybackMode) {
+        shareRollBtn.classList.remove('hidden');
+      } else {
+        shareRollBtn.classList.add('hidden');
+      }
+
+      if (visible) {
+        totalsFeedEl.classList.remove('feed-hidden-left');
+        totalsFeedEl.classList.add('feed-visible');
+      } else {
+        totalsFeedEl.classList.remove('feed-visible');
+        totalsFeedEl.classList.add('feed-hidden-left');
+      }
+    }
+
+    // ==========================================
+    // 7. MATTER.JS PHYSICS WORLD (SOLID SCREEN BOUNDS)
+    // ==========================================
+    let engine, render, runner;
+    let ground, leftWall, rightWall, topWall;
+    const spawnedBodies = [];
+    const MAX_PHYSICS_BODIES = 350;
+
+    function initPhysics() {
+      const container = document.getElementById('canvas-holder');
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      engine = Matter.Engine.create({ 
+        enableSleeping: false,
+        positionIterations: 10,
+        velocityIterations: 10
+      });
+      engine.world.gravity.y = EXPLOSION_CONFIG.gravity;
+
+      render = Matter.Render.create({
+        element: container,
+        engine: engine,
+        options: {
+          width: width,
+          height: height,
+          wireframes: false,
+          background: 'transparent',
+          pixelRatio: Math.min(window.devicePixelRatio || 1, 1.3)
+        }
+      });
+
+      Matter.Render.run(render);
+      runner = Matter.Runner.create();
+      
+      Matter.Runner.run(runner, engine);
+
+      const thickness = 200;
+      
+      ground = Matter.Bodies.rectangle(width / 2, height + thickness / 2, width * 3, thickness, { 
+        isStatic: true, 
+        friction: 0.8,
+        restitution: EXPLOSION_CONFIG.bounciness
+      });
+      
+      leftWall = Matter.Bodies.rectangle(-thickness / 2, height / 2, thickness, height * 4, { 
+        isStatic: true, 
+        friction: 0.2,
+        restitution: 0.6 
+      });
+      
+      rightWall = Matter.Bodies.rectangle(width + thickness / 2, height / 2, thickness, height * 4, { 
+        isStatic: true, 
+        friction: 0.2,
+        restitution: 0.6 
+      });
+
+      topWall = Matter.Bodies.rectangle(width / 2, -thickness / 2 - 100, width * 3, thickness, {
+        isStatic: true,
+        restitution: 0.5
+      });
+
+      Matter.Composite.add(engine.world, [ground, leftWall, rightWall, topWall]);
+
+      Matter.Events.on(render, 'afterRender', () => {
+        const ctx = render.context;
+        spawnedBodies.forEach(item => {
+          const { position, angle } = item.body;
+          const radius = item.radius;
+
+          ctx.save();
+          ctx.translate(position.x, position.y);
+          ctx.rotate(angle);
+
+          drawGameItem(ctx, item.type, radius);
+
+          ctx.restore();
+        });
+      });
+    }
+
+    function drawGameItem(ctx, type, r) {
+      switch(type) {
+          case 'experience':
+          drawEmeraldShape(ctx, r, 'purple', 'purple');
+          break;
+
+        case 'coin':
+          ctx.beginPath();
+          ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2);
+          ctx.fillStyle = '#f97316';
+          ctx.fill();
+          ctx.strokeStyle = '#ea580c';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.font = '800 13px Plus Jakarta Sans';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('$', 0, 1);
+          break;
+          
+          case 'coin bag':
+          ctx.beginPath();
+          ctx.arc(0, 0, r * 0.85, 0, Math.PI * 2);
+          ctx.fillStyle = '#fed7aa';
+          ctx.fill();
+          ctx.strokeStyle = '#fb923c';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.font = '800 13px Plus Jakarta Sans';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('$', 0, 1);
+          break;
+
+        case 'gem':
+          drawDiamondShape(ctx, r, '#06b6d4', '#0891b2');
+          break;
+
+        case 'ruby':
+          drawDiamondShape(ctx, r, '#ef4444', '#b91c1c');
+          break;
+
+        case 'emerald':
+          drawEmeraldShape(ctx, r, '#10b981', '#047857');
+          break;
+
+        case 'sapphire':
+          drawDiamondShape(ctx, r, '#3b82f6', '#1d4ed8');
+          break;
+
+        case 'key':
+          ctx.font = '22px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🔑', 0, 0);
+          break;
+
+        case 'map':
+          ctx.font = '22px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('🗺️', 0, 0);
+          break;
+
+        default:
+          ctx.font = '20px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('✨', 0, 0);
+      }
+    }
+
+    function drawDiamondShape(ctx, r, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, -r*0.2);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r, -r*0.2);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    function drawEmeraldShape(ctx, r, fill, stroke) {
+      const w = r * 0.75;
+      const h = r;
+      ctx.beginPath();
+      ctx.moveTo(-w*0.5, -h);
+      ctx.lineTo(w*0.5, -h);
+      ctx.lineTo(w, -h*0.5);
+      ctx.lineTo(w, h*0.5);
+      ctx.lineTo(w*0.5, h);
+      ctx.lineTo(-w*0.5, h);
+      ctx.lineTo(-w, h*0.5);
+      ctx.lineTo(-w, -h*0.5);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    window.addEventListener('resize', () => {
+      if (!render) return;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const thickness = 200;
+
+      render.options.width = width;
+      render.options.height = height;
+      render.canvas.width = width;
+      render.canvas.height = height;
+
+      Matter.Body.setPosition(ground, { x: width / 2, y: height + thickness / 2 });
+      Matter.Body.setPosition(leftWall, { x: -thickness / 2, y: height / 2 });
+      Matter.Body.setPosition(rightWall, { x: width + thickness / 2, y: height / 2 });
+      Matter.Body.setPosition(topWall, { x: width / 2, y: -thickness / 2 - 100 });
+    });
+
+    function spawnPhysicalLootItem(type) {
+      const startX = window.innerWidth / 2 + (Math.random() * 20 - 10);
+      const startY = window.innerHeight - 150;
+
+      if (spawnedBodies.length >= MAX_PHYSICS_BODIES) {
+        const oldest = spawnedBodies.shift();
+        Matter.Composite.remove(engine.world, oldest.body);
+      }
+
+      const radius = 18;
+      const body = Matter.Bodies.circle(startX, startY, radius, {
+        restitution: EXPLOSION_CONFIG.bounciness,
+        friction: EXPLOSION_CONFIG.friction,
+        frictionAir: 0.012,
+        density: 0.004,
+        render: { fillStyle: 'transparent', strokeStyle: 'transparent' }
+      });
+
+      const forceX = (Math.random() - 0.5) * 2 * EXPLOSION_CONFIG.spreadForce;
+      const forceY = -(Math.random() * (EXPLOSION_CONFIG.upwardForceMax - EXPLOSION_CONFIG.upwardForceMin) + EXPLOSION_CONFIG.upwardForceMin);
+      const spin = Math.random() * (EXPLOSION_CONFIG.torqueMax - EXPLOSION_CONFIG.torqueMin) + EXPLOSION_CONFIG.torqueMin;
+
+      Matter.Body.applyForce(body, body.position, { x: forceX, y: forceY });
+      Matter.Body.setAngularVelocity(body, spin);
+
+      Matter.Composite.add(engine.world, body);
+      spawnedBodies.push({ body, type, radius });
+
+      recordPullDrop(type);
+    }
+
+    function clearStack() {
+      spawnedBodies.forEach(item => Matter.Composite.remove(engine.world, item.body));
+      spawnedBodies.length = 0;
+    }
+
+    // ==========================================
+    // 8. UNBOXING INTERACTION LOGIC
+    // ==========================================
+    const chestBox = document.getElementById('chest-box');
+    let isOpening = false;
+
+    function getRandomInt(min, max) {
+      if (min === 0 && max === 0) return 0;
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
+    function calculateLootRoll() {
+      const drops = [];
+      LOOT_CONFIG.forEach(config => {
+        let totalQty = getRandomInt(config.baseRange[0], config.baseRange[1]);
+        config.extraChances.forEach(tier => {
+          if (Math.random() * 100 <= tier.chance) {
+            totalQty += getRandomInt(tier.range[0], tier.range[1]);
+          }
+        });
+        if (totalQty > 0) {
+          drops.push({ type: config.type, qty: totalQty });
+        }
+      });
+      return drops;
+    }
+
+    function triggerChestOpenAnimation(rolledLoot) {
+      clearStack();
+
+      totalsFeedEl.classList.remove('feed-visible');
+      totalsFeedEl.classList.add('feed-hidden-left');
+
+      setTimeout(() => {
+        resetLivePullFeed();
+        livePullFeedEl.classList.remove('feed-hidden-left');
+        livePullFeedEl.classList.add('feed-visible');
+      }, 200);
+
+      chestBox.classList.add('chest-shake');
+
+      setTimeout(() => {
+        chestBox.classList.remove('chest-shake');
+        chestBox.classList.add('chest-open');
+
+        const individualItems = [];
+        const pullGains = {};
+
+        rolledLoot.forEach(item => {
+          pullGains[item.type] = item.qty;
+          for (let i = 0; i < item.qty; i++) {
+            individualItems.push(item.type);
+          }
+        });
+
+        const baseDelay = 120; // x0.5 speed
+        let accumulatedTime = 0;
+
+        individualItems.forEach((type, index) => {
+          const itemNumber = index + 1;
+          
+          let speedFactor = 1.0;
+          if (itemNumber > 20) {
+            speedFactor += (itemNumber - 20) * 0.02;
+          }
+
+          const currentDelay = baseDelay / speedFactor;
+          accumulatedTime += currentDelay;
+
+          setTimeout(() => {
+            spawnPhysicalLootItem(type);
+          }, accumulatedTime);
+        });
+
+        setTimeout(() => {
+          chestBox.classList.remove('chest-open');
+          isOpening = false;
+
+          animateTotalsTransition(pullGains);
+
+        }, Math.max(accumulatedTime + 600, 1000));
+
+      }, 250);
+    }
+
+    function openChest() {
+      if (isOpening || isPlaybackMode) return;
+
+      // Check energy system availability
+      updateEnergyUI();
+      if (energyState.currentEnergy < ENERGY_CONFIG.costPerRoll) {
+        energyDisplayEl.classList.add('energy-warn');
+        setTimeout(() => energyDisplayEl.classList.remove('energy-warn'), 400);
+        return;
+      }
+
+      // Deduct Energy
+      if (energyState.currentEnergy === ENERGY_CONFIG.maxEnergy) {
+        energyState.lastUpdatedTime = Date.now();
+      }
+      energyState.currentEnergy -= ENERGY_CONFIG.costPerRoll;
+      saveEnergyState();
+      updateEnergyUI();
+
+      isOpening = true;
+
+      // Hide tap hint text permanently on first open
+      if (!hasUnboxedFirstTime) {
+        hasUnboxedFirstTime = true;
+        try {
+          localStorage.setItem(HAS_UNBOXED_KEY, 'true');
+        } catch(e) {}
+        const tapHintText = document.getElementById('tap-hint-text');
+        if (tapHintText) tapHintText.style.display = 'none';
+      }
+
+      const rolledLoot = calculateLootRoll();
+      triggerChestOpenAnimation(rolledLoot);
+    }
+
+    // ==========================================
+    // 9. PLAIN TEXT UNLOCKS & INTERACTIVE DETAIL
+    // ==========================================
+    const UNLOCKS_CONFIG = [
+        {
+        title: 'Start playing',
+        note: 'welcome.',
+        reqs: { experinece: 1 }
+      },
+              {
+        title: 'Keep playing',
+        note: 'nice.',
+        reqs: { experinece: 10 }
+      },
+              {
+        title: 'Continue playing',
+        note: 'you got lucky one day, or you didnt.',
+        reqs: { experinece: 100 }
+      },
+              {
+        title: 'Cant stop playing',
+        note: 'insane.',
+        reqs: { experinece: 1000 }
+      },
+              {
+        title: 'You might have to stop playing',
+        note: 'goodbye.',
+        reqs: { experinece: 10000 }
+      },
+      {
+        title: 'Being your journey',
+        note: 'You cracked your first chest. The creak of old wood and the scent of dust smells like possibility, infinite possibilities.',
+        reqs: { coins: 1 }
+      },
+      {
+        title: 'Pocket Change',
+        note: 'You start to get a lot of coins.',
+        reqs: { coins: 25 }
+      },
+      {
+        title: 'Not-so Pocket Change',
+        note: 'You start to get a lot of coins.',
+        reqs: { coins: 100 }
+      },
+      {
+        title: 'Business',
+        note: 'Coins are racking up fast.',
+        reqs: { coins: 250 }
+      },
+      {
+        title: 'You have a LOT of coins',
+        note: 'You got lucky once or twice, or youre dedicated.',
+        reqs: { coins: 250 }
+      },
+            {
+        title: 'Can i sell this',
+        note: 'Get a first ancient coin. they feel lighter',
+        reqs: { coin : 1 }
+      },
+      {
+        title: 'I can sell this',
+        note: 'Get ten ancient coin. they feel heavier',
+        reqs: { coin : 10 }
+      },
+      {
+        title: 'WOAHHHHH',
+        note: 'Get 250 ancient coins. you got lucky getting a lot in a pull didnt you',
+        reqs: { coin : 250 }
+      },
+            {
+        title: '1k',
+        note: 'Get 1000 ancient coins. you got lucky getting a lot in a pull didnt you',
+        reqs: { coin : 1000 }
+      },
+      {
+        title: 'Siny!',
+        note: 'Your first gem. They are rarer than coins!',
+        reqs: { gems: 1 }
+      },
+      {
+        title: 'Gem Hoarder',
+        note: 'You’ve collected enough gems to fill a crown.',
+        reqs: { gems: 10 }
+      },
+      {
+        title: 
+        'Key Collector',
+        note: 'Keys upon keys. You could unlock a door to anywhere— or simply rattle them for fun.',
+        reqs: { key: 5 }
+      },
+      {
+        title: 'Emerald Eye',
+        note: 'Green and deep as the forest. These emeralds whisper of ancient groves and hidden glades.',
+        reqs: { emerald: 1 }
+      },
+      {
+        title: 'Ruby Heart',
+        note: 'A handful of rubies, warm as embers. Some say they hold the last embers of a dying star.',
+        reqs: { ruby: 1 }
+      },
+      {
+        title: 'Sapphire Soul',
+        note: 'Sapphires, blue as a winter sky. Each one seems to hold a tiny storm inside.',
+        reqs: { sapphire: 1 }
+      },
+      {
+        title: 'Wealthy Hoarder',
+        note: 'Your collection is impressive.',
+        reqs: { coins: 500, gems: 50 }
+      },
+      {
+        title: 'Secret Note: The Forgotten Vault',
+        note: '???',
+        reqs: { key: 10, gems: 30, coins: 200 }
+      }
+    ];
+
+    const unlocksDrawer = document.getElementById('unlocks-drawer');
+    const openUnlocksBtn = document.getElementById('open-unlocks-btn');
+    const closeUnlocksBtn = document.getElementById('close-unlocks-btn');
+    const unlocksListEl = document.getElementById('unlocks-list');
+
+    const infoDrawer = document.getElementById('info-drawer');
+    const openInfoBtn = document.getElementById('open-info-btn');
+    const closeInfoBtn = document.getElementById('close-info-btn');
+
+    const drawerMainHeader = document.getElementById('drawer-main-header');
+    const drawerDetailHeader = document.getElementById('drawer-detail-header');
+    const unlockDetailView = document.getElementById('unlock-detail-view');
+    const backToListBtn = document.getElementById('back-to-list-btn');
+
+    const wipeSaveBtn = document.getElementById('wipe-save-btn');
+    const wipeConfirmBox = document.getElementById('wipe-confirm-box');
+    const confirmWipeBtn = document.getElementById('confirm-wipe-btn');
+    const cancelWipeBtn = document.getElementById('cancel-wipe-btn');
+
+    openInfoBtn.addEventListener('click', () => {
+      unlocksDrawer.classList.replace('drawer-open', 'drawer-closed');
+      infoDrawer.classList.replace('drawer-closed', 'drawer-open');
+    });
+    closeInfoBtn.addEventListener('click', () => infoDrawer.classList.replace('drawer-open', 'drawer-closed'));
+
+    openUnlocksBtn.addEventListener('click', () => {
+      infoDrawer.classList.replace('drawer-open', 'drawer-closed');
+      showMainList();
+      unlocksDrawer.classList.replace('drawer-closed', 'drawer-open');
+    });
+    closeUnlocksBtn.addEventListener('click', () => unlocksDrawer.classList.replace('drawer-open', 'drawer-closed'));
+
+    backToListBtn.addEventListener('click', showMainList);
+
+    function showMainList() {
+      drawerDetailHeader.classList.add('hidden');
+      unlockDetailView.classList.add('hidden');
+      drawerMainHeader.classList.remove('hidden');
+      unlocksListEl.classList.remove('hidden');
+    }
+
+    function showNoteDetail(unlock, isUnlocked, reqStrings) {
+      if (!isUnlocked) return; // Only open page if note is unlocked
+
+      drawerMainHeader.classList.add('hidden');
+      unlocksListEl.classList.add('hidden');
+
+      // SEPARATE DEDICATED NOTE DETAIL PAGE
+      unlockDetailView.innerHTML = `
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] font-black uppercase tracking-wider text-amber-800">
+            UNLOCKED NOTE
+          </span>
+          <h3 class="text-xl font-black text-stone-900">${unlock.title}</h3>
+          <p class="text-xs font-bold text-stone-500">Requirements: ${reqStrings.join(' • ')}</p>
+        </div>
+
+        <div class="mt-4 text-stone-800 font-bold text-sm leading-relaxed">
+          "${unlock.note}"
+        </div>
+      `;
+
+      drawerDetailHeader.classList.remove('hidden');
+      unlockDetailView.classList.remove('hidden');
+      unlockDetailView.classList.add('flex');
+    }
+
+    function renderUnlocksList() {
+      unlocksListEl.innerHTML = '';
+
+      UNLOCKS_CONFIG.forEach((unlock, index) => {
+        let isUnlocked = true;
+        const reqStrings = [];
+
+        for (let resourceId in unlock.reqs) {
+          const requiredAmount = unlock.reqs[resourceId];
+          const currentAmount = lifetimeStats[resourceId] || 0;
+          const config = LOOT_CONFIG.find(c => c.id === resourceId);
+          const name = config ? config.name : resourceId;
+
+          if (currentAmount < requiredAmount) {
+            isUnlocked = false;
+          }
+          reqStrings.push(`${name}: ${Math.min(currentAmount, requiredAmount)}/${requiredAmount}`);
+        }
+
+        const noteBlock = document.createElement('div');
+        noteBlock.className = `flex flex-col gap-1 py-4 ${isUnlocked ? 'cursor-pointer hover:opacity-80 active:scale-[0.99] transition' : ''}`;
+
+        noteBlock.innerHTML = `
+          <div class="flex items-center justify-between">
+            <h3 class="font-extrabold text-sm ${isUnlocked ? 'text-amber-950' : 'text-stone-700'}">${unlock.title}</h3>
+            <span class="text-[10px] font-black uppercase tracking-wider ${isUnlocked ? 'text-amber-700' : 'text-stone-400'}">
+              ${isUnlocked ? 'UNLOCKED →' : 'LOCKED'}
+            </span>
+          </div>
+
+          <div class="text-[11px] font-bold text-stone-500">
+            Requirements: ${reqStrings.join(' • ')}
+          </div>
+        `;
+
+        noteBlock.addEventListener('click', () => showNoteDetail(unlock, isUnlocked, reqStrings));
+
+        unlocksListEl.appendChild(noteBlock);
+
+        // Line separator between notes
+        if (index < UNLOCKS_CONFIG.length - 1) {
+          const hr = document.createElement('hr');
+          hr.className = 'border-stone-300/70 my-0';
+          unlocksListEl.appendChild(hr);
+        }
+      });
+    }
+
+    wipeSaveBtn.addEventListener('click', () => wipeConfirmBox.classList.remove('hidden'));
+    cancelWipeBtn.addEventListener('click', () => wipeConfirmBox.classList.add('hidden'));
+
+    confirmWipeBtn.addEventListener('click', () => {
+      wipeSaveData();
+      wipeConfirmBox.classList.add('hidden');
+      showMainList();
+      unlocksDrawer.classList.replace('drawer-open', 'drawer-closed');
+    });
+
+    chestBox.addEventListener('click', openChest);
+
+    // ==========================================
+    // 10. SHARE ROLL & BASE64 ENCODED AUTH PLAYBACK LOGIC
+    // ==========================================
+    const shareModal = document.getElementById('share-modal');
+    const closeShareModalBtn = document.getElementById('close-share-modal-btn');
+    const shareUsernameInput = document.getElementById('share-username-input');
+    const shareTextPreview = document.getElementById('share-text-preview');
+    const copyShareBtn = document.getElementById('copy-share-btn');
+    const copyToast = document.getElementById('copy-toast');
+    const playbackBanner = document.getElementById('playback-banner');
+    const playbackUserTitle = document.getElementById('playback-user-title');
+    const exitPlaybackBtn = document.getElementById('exit-playback-btn');
+    const tamperBanner = document.getElementById('tamper-banner');
+    const exitTamperBtn = document.getElementById('exit-tamper-btn');
+
+    try {
+      const savedName = localStorage.getItem(USERNAME_STORAGE_KEY);
+      if (savedName) shareUsernameInput.value = savedName;
+    } catch(e) {}
+
+    function buildRollCompactString(dropsMap) {
+      const parts = [];
+      LOOT_CONFIG.forEach(item => {
+        if (dropsMap[item.type] && dropsMap[item.type] > 0) {
+          parts.push(`${item.type}:${dropsMap[item.type]}`);
+        }
+      });
+      return parts.join(',');
+    }
+
+    function parseRollCompactString(compactStr) {
+      const result = [];
+      if (!compactStr) return result;
+      const pairs = compactStr.split(',');
+      pairs.forEach(pair => {
+        const [type, qtyStr] = pair.split(':');
+        const qty = parseInt(qtyStr, 10);
+        if (type && !isNaN(qty) && qty > 0) {
+          result.push({ type, qty });
+        }
+      });
+      return result;
+    }
+
+    function generateShareFormattedText() {
+      if (!lastCompletedPullDrops) return '';
+
+      const name = shareUsernameInput.value.trim() || 'Loot Hunter';
+      try {
+        localStorage.setItem(USERNAME_STORAGE_KEY, name);
+      } catch(e) {}
+
+      let totalItems = 0;
+      const lines = [];
+
+      LOOT_CONFIG.forEach(item => {
+        const qty = lastCompletedPullDrops[item.type] || 0;
+        if (qty > 0) {
+          totalItems += qty;
+          lines.push(`${item.emoji} ${item.name} x ${qty}`);
+        }
+      });
+
+      const compactStr = buildRollCompactString(lastCompletedPullDrops);
+      const authSig = generateRollAuthSig(name, compactStr);
+      const encodedPayload = encodeShareData(name, compactStr);
+
+      const baseUrl = window.location.href.split('#')[0].split('?')[0];
+      const shareUrl = `${baseUrl}?data=${encodeURIComponent(encodedPayload)}&sig=${authSig}`;
+
+      const textOutput = `I rolled ${totalItems} items in Loot Stacker!
+My roll:
+${lines.join('\n')}
+
+See my roll here:
+${shareUrl}`;
+
+      return textOutput;
+    }
+
+    shareRollBtn.addEventListener('click', () => {
+      if (!lastCompletedPullDrops) return;
+      shareTextPreview.value = generateShareFormattedText();
+      copyToast.classList.add('hidden');
+      shareModal.classList.remove('hidden');
+    });
+
+    closeShareModalBtn.addEventListener('click', () => {
+      shareModal.classList.add('hidden');
+    });
+
+    shareUsernameInput.addEventListener('input', () => {
+      shareTextPreview.value = generateShareFormattedText();
+    });
+
+    copyShareBtn.addEventListener('click', () => {
+      shareTextPreview.select();
+      shareTextPreview.setSelectionRange(0, 99999);
+      
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (err) {
+        copied = false;
+      }
+
+      if (copied) {
+        copyToast.classList.remove('hidden');
+        setTimeout(() => copyToast.classList.add('hidden'), 3000);
+      } else {
+        copyToast.innerText = "Selected! Press Ctrl+C / Cmd+C to copy";
+        copyToast.classList.remove('hidden');
+      }
+    });
+
+    exitPlaybackBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.location.href = window.location.href.split('?')[0];
+    });
+
+    exitTamperBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      tamperBanner.classList.add('hidden');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    });
+
+    function checkUrlPlayback() {
+      const params = new URLSearchParams(window.location.search);
+      const dataParam = params.get('data');
+      const sigParam = params.get('sig');
+
+      if (dataParam && sigParam) {
+        const decoded = decodeShareData(dataParam);
+
+        if (!decoded || !decoded.u || !decoded.r) {
+          tamperBanner.classList.remove('hidden');
+          return;
+        }
+
+        const expectedSig = generateRollAuthSig(decoded.u, decoded.r);
+
+        if (expectedSig !== sigParam) {
+          // TAMPER DETECTED
+          tamperBanner.classList.remove('hidden');
+          return;
+        }
+
+        // VALID BASE64 SHARE LINK -> TRIGGER PLAYBACK
+        isPlaybackMode = true;
+        playbackUserTitle.innerText = `Viewing ${decoded.u}'s Roll`;
+        playbackBanner.classList.remove('hidden');
+
+        const tapHintText = document.getElementById('tap-hint-text');
+        if (tapHintText) tapHintText.innerText = "VIEWING SHARED REPLAY";
+
+        const rolledLoot = parseRollCompactString(decoded.r);
+
+        setTimeout(() => {
+          triggerChestOpenAnimation(rolledLoot);
+        }, 600);
+      }
+    }
+
+    // ==========================================
+    // 11. INITIALIZATION ON LOAD
+    // ==========================================
+    window.onload = () => {
+      initPhysics();
+      updateEnergyUI();
+      renderTotalsFeed(true);
+      renderUnlocksList();
+      renderPayoutTable();
+      checkUrlPlayback();
+    };
+  </script>
+</body>
+</html>
