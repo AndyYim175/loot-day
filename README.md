@@ -1,0 +1,2 @@
+# loot-day
+loot day
